@@ -296,20 +296,39 @@ class MultiHeadAttention(nn.Module):
         return torch.cat([h(x) for h in self.heads], dim=-1)
 
 
+class TransformerBlock(nn.Module):
+    def __init__(self, n_heads: int, embedding_size: int, block_size: int):
+        super().__init__()
+
+        self.n_heads = n_heads
+        self.embedding_size = embedding_size
+
+        assert self.embedding_size % self.n_heads == 0
+        self.head_size = self.embedding_size // self.n_heads
+
+        # self-attention
+        self.sa = MultiHeadAttention(
+            self.n_heads, embedding_size, self.head_size, block_size
+        )
+        self.ffwd = nn.Sequential(nn.Linear(embedding_size, embedding_size), nn.ReLU())
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.ffwd(self.sa(x))
+
+
 class TransformerLanguageModel(nn.Module):
     def __init__(
         self,
         vocabulary_size: int,
         embedding_size: int,
-        head_size: int,
         block_size: int,
         n_heads: int = 4,
+        n_blocks: int = 4,
     ):
         super().__init__()
 
         self.vocabulary_size = vocabulary_size
         self.embedding_size = embedding_size
-        self.head_size = head_size
         self.block_size = block_size
 
         # embed integer tokens as discrete points in continuous space
@@ -317,12 +336,15 @@ class TransformerLanguageModel(nn.Module):
         # embed positions in the same continuous space
         self.position_embedding_table = nn.Embedding(block_size, embedding_size)
 
-        assert head_size % n_heads == 0
-        self.sa_heads = MultiHeadAttention(
-            n_heads, embedding_size, head_size // n_heads, block_size
+        self.blocks = nn.Sequential(
+            *[
+                TransformerBlock(n_heads, embedding_size, block_size)
+                for _ in range(n_blocks)
+            ]
         )
+
         # the language model head converts from embedding space to logits on tokens
-        self.lm_head = nn.Linear(head_size, vocabulary_size)
+        self.lm_head = nn.Linear(embedding_size, vocabulary_size)
 
     def forward(
         self,
@@ -340,7 +362,7 @@ class TransformerLanguageModel(nn.Module):
         embedded_position = self.position_embedding_table(positions)
 
         x = embedded_context + embedded_position
-        x = self.sa_heads(x)
+        x = self.blocks(x)
         logits = self.lm_head(x)
 
         if targets is not None:
@@ -382,11 +404,9 @@ torch.manual_seed(42)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 embedding_size = 32
-head_size = 32
 transformer = TransformerLanguageModel(
     len(vocabulary),
     embedding_size=embedding_size,
-    head_size=head_size,
     block_size=block_size,
 ).to(device)
 optimizer = torch.optim.AdamW(transformer.parameters(), lr=1e-3)
