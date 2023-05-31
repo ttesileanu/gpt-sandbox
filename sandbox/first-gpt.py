@@ -56,6 +56,9 @@ val_data = tokenized_text[n_train:]
 
 # %% [markdown]
 # ## Warm-up: bigram language model
+
+
+# %%
 class BigramLanguageModel(nn.Module):
     def __init__(self, vocabulary_size: int):
         super().__init__()
