@@ -247,7 +247,9 @@ print(untokenize(bigram.generate(context=torch.tensor([[0]]), n=500)[0].tolist()
 
 
 class SelfAttentionHead(nn.Module):
-    def __init__(self, embedding_size: int, head_size: int, block_size: int):
+    def __init__(
+        self, embedding_size: int, head_size: int, block_size: int, dropout: float
+    ):
         super().__init__()
 
         self.embedding_size = embedding_size
@@ -261,6 +263,8 @@ class SelfAttentionHead(nn.Module):
             "mask", torch.tril(torch.ones(block_size, block_size)) == 0
         )
 
+        self.dropout = nn.Dropout(dropout)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         k = self.key(x)
         q = self.query(x)
@@ -271,13 +275,20 @@ class SelfAttentionHead(nn.Module):
         w.masked_fill_(self.mask[:T, :T], float("-inf"))
         w = F.softmax(w, dim=-1)
 
+        w = self.dropout(w)
+
         out = w @ v
         return out
 
 
 class MultiHeadAttention(nn.Module):
     def __init__(
-        self, n_heads: int, embedding_size: int, head_size: int, block_size: int
+        self,
+        n_heads: int,
+        embedding_size: int,
+        head_size: int,
+        block_size: int,
+        dropout: float,
     ):
         super().__init__()
 
@@ -287,17 +298,46 @@ class MultiHeadAttention(nn.Module):
 
         self.heads = nn.ModuleList(
             [
-                SelfAttentionHead(embedding_size, head_size, block_size)
+                SelfAttentionHead(
+                    embedding_size, head_size, block_size, dropout=dropout
+                )
                 for _ in range(n_heads)
             ]
         )
+        self.proj = nn.Linear(embedding_size, embedding_size)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.cat([h(x) for h in self.heads], dim=-1)
+        x = torch.cat([h(x) for h in self.heads], dim=-1)
+        x = self.dropout(self.proj(x))
+        return x
+
+
+class FeedForward(nn.Module):
+    def __init__(self, embedding_size: int, dropout: float, expansion_factor: int = 4):
+        super().__init__()
+
+        self.embedding_size = embedding_size
+        self.expanded_size = expansion_factor * self.embedding_size
+        self.net = nn.Sequential(
+            nn.Linear(self.embedding_size, self.expanded_size),
+            nn.ReLU(),
+            nn.Linear(self.expanded_size, self.embedding_size),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, n_heads: int, embedding_size: int, block_size: int):
+    def __init__(
+        self,
+        n_heads: int,
+        embedding_size: int,
+        block_size: int,
+        dropout: float,
+    ):
         super().__init__()
 
         self.n_heads = n_heads
@@ -308,12 +348,19 @@ class TransformerBlock(nn.Module):
 
         # self-attention
         self.sa = MultiHeadAttention(
-            self.n_heads, embedding_size, self.head_size, block_size
+            self.n_heads, embedding_size, self.head_size, block_size, dropout=dropout
         )
-        self.ffwd = nn.Sequential(nn.Linear(embedding_size, embedding_size), nn.ReLU())
+        self.ffwd = FeedForward(embedding_size, dropout=dropout)
+
+        self.ln1 = nn.LayerNorm(embedding_size)
+        self.ln2 = nn.LayerNorm(embedding_size)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.ffwd(self.sa(x))
+        # skip connections, allowing supervisory input to propagate back to earlier
+        # blocks, especially early during training
+        x = x + self.sa(self.ln1(x))
+        x = x + self.ffwd(self.ln2(x))
+        return x
 
 
 class TransformerLanguageModel(nn.Module):
@@ -324,6 +371,7 @@ class TransformerLanguageModel(nn.Module):
         block_size: int,
         n_heads: int = 4,
         n_blocks: int = 4,
+        dropout: float = 0.2,
     ):
         super().__init__()
 
@@ -338,10 +386,11 @@ class TransformerLanguageModel(nn.Module):
 
         self.blocks = nn.Sequential(
             *[
-                TransformerBlock(n_heads, embedding_size, block_size)
+                TransformerBlock(n_heads, embedding_size, block_size, dropout=dropout)
                 for _ in range(n_blocks)
             ]
         )
+        self.ln_f = nn.LayerNorm(embedding_size)
 
         # the language model head converts from embedding space to logits on tokens
         self.lm_head = nn.Linear(embedding_size, vocabulary_size)
@@ -363,6 +412,7 @@ class TransformerLanguageModel(nn.Module):
 
         x = embedded_context + embedded_position
         x = self.blocks(x)
+        x = self.ln_f(x)
         logits = self.lm_head(x)
 
         if targets is not None:
@@ -403,24 +453,26 @@ torch.manual_seed(42)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-embedding_size = 32
+embedding_size = 384
+block_size = 256
+batch_size = 64
 transformer = TransformerLanguageModel(
     len(vocabulary),
     embedding_size=embedding_size,
     block_size=block_size,
+    n_heads=6,
+    n_blocks=6,
+    dropout=0.2,
 ).to(device)
-optimizer = torch.optim.AdamW(transformer.parameters(), lr=1e-3)
+optimizer = torch.optim.AdamW(transformer.parameters(), lr=3e-4)
 
-block_size = 8
-batch_size = 32
 n_batches = 15_000
 n_test_batches = 200
 eval_history = []
 loss_history = defaultdict(list)
 pbar = tqdm(range(n_batches))
 
-t0 = time.time()
-eval_interval = 0.5
+eval_interval = 500
 for i in pbar:
     xb, yb = get_batch(train_data, batch_size=batch_size, block_size=block_size)
 
@@ -432,7 +484,7 @@ for i in pbar:
     loss.backward()
     optimizer.step()
 
-    if time.time() - t0 > eval_interval:
+    if i % eval_interval == 0:
         losses = estimate_loss(
             transformer,
             n_test_batches,
@@ -448,7 +500,6 @@ for i in pbar:
         eval_history.append(i)
         for key, value in losses.items():
             loss_history[key].append(value)
-        t0 = time.time()
 
 for key in loss_history:
     loss_history[key] = np.asarray(loss_history[key])
