@@ -1,0 +1,24 @@
+name:
+    gpt
+
+channels:
+    - pytorch
+    - nvidia
+    - conda-forge
+
+dependencies:
+    - python=3.9
+    - pip
+    - black
+    - numpy
+    - scipy
+    - tqdm
+    - matplotlib
+    - seaborn
+    - pytorch
+    - pytorch-cuda=11.8
+    - ipykernel
+    - ipywidgets>=7.0,<8.0
+    - jupyter
+    - pip:
+      - pydove

@@ -97,6 +97,7 @@ class BigramLanguageModel(nn.Module):
         :param context: shape `(batch_size, time_steps)`
         :return: shape `(batch_size, time_steps + n)`
         """
+        context = context.to(self.token_embedding_table.weight.device)
         for i in range(n):
             logits, loss = self(context)
 
@@ -170,6 +171,7 @@ def estimate_loss(
 torch.manual_seed(42)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Running on {device}.")
 
 bigram = BigramLanguageModel(len(vocabulary)).to(device)
 optimizer = torch.optim.AdamW(bigram.parameters(), lr=1e-3)
@@ -432,6 +434,7 @@ class TransformerLanguageModel(nn.Module):
         :param context: shape `(batch_size, time_steps)`
         :return: shape `(batch_size, time_steps + n)`
         """
+        context = context.to(self.lm_head.weight.device)
         for i in range(n):
             context_crop = context[:, -self.block_size :]
             logits, loss = self(context_crop)
@@ -452,6 +455,7 @@ class TransformerLanguageModel(nn.Module):
 torch.manual_seed(42)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Running on {device}")
 
 embedding_size = 384
 block_size = 256
@@ -466,7 +470,7 @@ transformer = TransformerLanguageModel(
 ).to(device)
 optimizer = torch.optim.AdamW(transformer.parameters(), lr=3e-4)
 
-n_batches = 15_000
+n_batches = 5_000
 n_test_batches = 200
 eval_history = []
 loss_history = defaultdict(list)
